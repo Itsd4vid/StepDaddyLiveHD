@@ -1,8 +1,10 @@
+import asyncio
 import json
 import re
 import reflex as rx
 from urllib.parse import quote, urlparse
 from curl_cffi import AsyncSession
+from cloakbrowser import launch_async
 from typing import List
 from .utils import encrypt, decrypt, urlsafe_base64, decode_bundle
 from rxconfig import config
@@ -25,6 +27,8 @@ class StepDaddy:
             self._session = AsyncSession()
         self._base_url = "https://dlhd.dad"
         self.channels = []
+        self._browser = None
+        self._browser_lock = asyncio.Lock()
         with open("StepDaddyLiveHD/meta.json", "r") as f:
             self._meta = json.load(f)
 
@@ -39,13 +43,53 @@ class StepDaddy:
             headers["Origin"] = origin
         return headers
 
+    async def _get_browser(self):
+        async with self._browser_lock:
+            if self._browser is None or not self._browser.is_connected():
+                socks5 = config.socks5
+                if socks5:
+                    self._browser = await launch_async(proxy=f"socks5://{socks5}", headless=True)
+                else:
+                    self._browser = await launch_async(headless=True)
+            browser = self._browser
+        return browser
+
+    async def _fetch_page(self, url: str, referer: str = None) -> str:
+        browser = await self._get_browser()
+        page = await browser.new_page()
+        try:
+            if referer:
+                await page.set_extra_http_headers({"Referer": referer})
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as e:
+                raise RuntimeError(f"Failed to load page {url}: {e}") from e
+            return await page.content()
+        finally:
+            await page.close()
+
+    async def _fetch_json(self, url: str, referer: str = None):
+        browser = await self._get_browser()
+        page = await browser.new_page()
+        try:
+            if referer:
+                await page.set_extra_http_headers({"Referer": referer})
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            except Exception as e:
+                raise RuntimeError(f"Failed to load page {url}: {e}") from e
+            text = await page.evaluate("() => document.body.innerText")
+            return json.loads(text)
+        finally:
+            await page.close()
+
     async def load_channels(self):
         channels = []
         try:
-            response = await self._session.get(f"{self._base_url}/24-7-channels.php", headers=self._headers())
+            response_text = await self._fetch_page(f"{self._base_url}/24-7-channels.php")
             matches = re.findall(
                 r'<a class="card"\s+href="/watch\.php\?id=(\d+)"[^>]*>\s*<div class="card__title">(.*?)</div>',
-                response.text,
+                response_text,
                 re.DOTALL
             )
             for channel_id, channel_name in matches:
@@ -61,17 +105,17 @@ class StepDaddy:
     async def stream(self, channel_id: str):
         key = "CHANNEL_KEY"
         url = f"{self._base_url}/stream/stream-{channel_id}.php"
-        response = await self._session.get(url, headers=self._headers())
-        matches = re.compile("iframe src=\"(.*)\" width").findall(response.text)
+        response_text = await self._fetch_page(url)
+        matches = re.compile("iframe src=\"(.*)\" width").findall(response_text)
         if matches:
             source_url = matches[0]
-            source_response = await self._session.get(source_url, headers=self._headers(url))
+            source_response_text = await self._fetch_page(source_url, url)
         else:
             raise ValueError("Failed to find source URL for channel")
 
-        channel_key = re.compile(rf"const\s+{re.escape(key)}\s*=\s*\"(.*?)\";").findall(source_response.text)[-1]
+        channel_key = re.compile(rf"const\s+{re.escape(key)}\s*=\s*\"(.*?)\";").findall(source_response_text)[-1]
 
-        data = decode_bundle(source_response.text)
+        data = decode_bundle(source_response_text)
         auth_ts = data.get("b_ts", "")
         auth_sig = data.get("b_sig", "")
         auth_rnd = data.get("b_rnd", "")
@@ -121,5 +165,4 @@ class StepDaddy:
         return data
 
     async def schedule(self):
-        response = await self._session.get(f"{self._base_url}/schedule/schedule-generated.php", headers=self._headers())
-        return response.json()
+        return await self._fetch_json(f"{self._base_url}/schedule/schedule-generated.php")
