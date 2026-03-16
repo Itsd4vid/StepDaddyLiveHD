@@ -1,4 +1,4 @@
-reflex==0.8.27
+reflex==0.8.28
 curl-cffi==0.13.0
 httpx[http2]==0.28.1
 python-dateutil==2.9.0
