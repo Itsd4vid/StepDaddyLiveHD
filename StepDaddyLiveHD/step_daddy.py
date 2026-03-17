@@ -1,21 +1,24 @@
 import asyncio
+import html
 import json
 import re
-import reflex as rx
-from urllib.parse import quote, urlparse
-from curl_cffi import AsyncSession
-from cloakbrowser import launch_async
+from pathlib import Path
 from typing import List
-from .utils import encrypt, decrypt, urlsafe_base64, decode_bundle
+from urllib.parse import quote, urlparse
+
+from cloakbrowser import launch_async
+from curl_cffi import AsyncSession
+from pydantic import BaseModel
+
 from rxconfig import config
-import html
+from .utils import encrypt, decrypt, urlsafe_base64, decode_bundle
 
 
-class Channel(rx.Base):
+class Channel(BaseModel):
     id: str
     name: str
     tags: List[str]
-    logo: str | None
+    logo: str | None = None
 
 
 class StepDaddy:
@@ -29,7 +32,7 @@ class StepDaddy:
         self.channels = []
         self._browser = None
         self._browser_lock = asyncio.Lock()
-        with open("StepDaddyLiveHD/meta.json", "r") as f:
+        with open(Path(__file__).parent / "meta.json", "r") as f:
             self._meta = json.load(f)
 
     def _headers(self, referer: str = None, origin: str = None):
